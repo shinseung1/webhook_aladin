@@ -74,17 +74,18 @@ object DatabaseFactory {
         }
     }
 
-    fun <T> transaction(jdbcUrl: String = defaultUrl(), block: (Connection) -> T): T {
-        return connect(jdbcUrl).use { conn ->
-            conn.autoCommit = false
-            try {
-                val result = block(conn)
-                conn.commit()
-                result
-            } catch (e: Exception) {
-                runCatching { conn.rollback() }
-                throw e
-            }
+    fun <T> transaction(block: (Connection) -> T): T {
+        val conn = connect()
+        conn.autoCommit = false
+        try {
+            val result = block(conn)
+            conn.commit()
+            return result
+        } catch (e: Throwable) {
+            try { conn.rollback() } catch (_: Throwable) {}
+            throw e
+        } finally {
+            try { conn.close() } catch (_: Throwable) {}
         }
     }
 }

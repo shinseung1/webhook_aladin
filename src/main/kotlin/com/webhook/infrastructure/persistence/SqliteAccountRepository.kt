@@ -74,21 +74,17 @@ class SqliteAccountRepository : AccountRepository {
     // deleteOrClose (요구사항: DELETED로 변경)
     // ─────────────────────────────────────────────────────────────
     override fun deleteOrClose(conn: Connection, accountId: String, updatedAt: Instant) {
-        conn.prepareStatement(
+        val updated = conn.prepareStatement(
             "UPDATE accounts SET status = ?, updated_at = ? WHERE account_id = ?"
         ).use { stmt ->
-            stmt.setString(1, AccountStatus.DELETED.name)   // ✅ DELETED
+            stmt.setString(1, AccountStatus.DELETED.name)
             stmt.setString(2, updatedAt.toString())
             stmt.setString(3, accountId)
-            stmt.executeUpdate()
+            stmt.executeUpdate()   // ✅ 영향 row 수 반환
         }
 
-
-        conn.createStatement().use { st ->
-            st.executeQuery("SELECT changes()").use { rs ->
-                rs.next()
-                if (rs.getInt(1) == 0) throw WebhookBusinessException("Account not found: $accountId")
-            }
+        if (updated == 0) {
+            throw WebhookBusinessException("Account not found: $accountId")
         }
     }
 

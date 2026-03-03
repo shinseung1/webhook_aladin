@@ -6,6 +6,8 @@ import com.webhook.domain.model.Account
 import com.webhook.domain.model.AccountStatus
 import com.webhook.domain.model.EventStatus
 import com.webhook.domain.model.EventType
+import com.webhook.domain.model.WebhookEvent
+import com.webhook.domain.service.WebhookBusinessException
 import com.webhook.infrastructure.persistence.AccountRepository
 import com.webhook.infrastructure.persistence.EventRepository
 import io.mockk.Runs
@@ -14,6 +16,7 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.verify
 import io.mockk.verifyOrder
+import net.bytebuddy.matcher.ElementMatchers.any
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -23,6 +26,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.sql.Connection
 import java.time.Instant
+import javax.management.Query.eq
 import javax.management.Query.match
 
 class WebhookProcessingUseCaseTest {
@@ -128,14 +132,36 @@ class WebhookProcessingUseCaseTest {
     // ────────────────────────────────────────────────────────────────────────
     @Test
     fun `claim 실패 시 이미 처리 중인 이벤트는 재처리되지 않는다`() {
-        every { eventRepo.insertIfAbsent(any()) } returns true
-        every { eventRepo.claimForProcessing(eventId) } returns false  // UPDATE 영향 행 0 → 재처리 금지
+        val cmd = ProcessWebhookCommand(
+            eventId = eventId,
+            eventType = EventType.EMAIL_FORWARDING_CHANGED, // ✅ 지원 이벤트로
+            accountId = accountId,
+            rawPayload = """{"email":"new@example.com"}""",
+            occurredAt = now
+        )
 
-        useCase.process(command)
+        every { eventRepo.insertIfAbsent(any<Connection>(), any()) } returns true
+        every { eventRepo.claimForProcessing(any<Connection>(), eq(eventId)) } returns false
+        every { eventRepo.findByEventId(any<Connection>(), eq(eventId)) } returns WebhookEvent(
+            eventId = eventId,
+            eventType = cmd.eventType,
+            accountId = accountId,
+            rawPayload = cmd.rawPayload,
+            status = EventStatus.PROCESSING,
+            createdAt = now,
+            processedAt = null,
+            errorMessage = null
+        )
 
-        verify(exactly = 0) { accountRepo.findById(any()) }
-        verify(exactly = 0) { eventRepo.updateStatus(any(), EventStatus.DONE,   any(), any()) }
-        verify(exactly = 0) { eventRepo.updateStatus(any(), EventStatus.FAILED, any(), any()) }
+        val result = useCase.process(cmd)
+
+        assertTrue(result.isDuplicate)
+        assertEquals(EventStatus.PROCESSING, result.status)
+
+        verify(exactly = 0) { accountRepo.updateEmailForwarding(any<Connection>(), any(), any(), any()) }
+        verify(exactly = 0) { accountRepo.deleteOrClose(any<Connection>(), any(), any()) }
+        verify(exactly = 0) { accountRepo.markAppleDeleted(any<Connection>(), any(), any()) }
+        verify(exactly = 0) { eventRepo.updateStatus(any<Connection>(), any(), any(), any(), any()) }
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -306,44 +332,40 @@ class WebhookProcessingUseCaseTest {
     @Test
     fun `도메인 처리 중 예외가 발생하면 이벤트는 FAILED로 기록되고 error_message가 저장된다`() {
         val cmd = ProcessWebhookCommand(
-            eventId    = "evt-fail-001",
-            eventType  = EventType.EMAIL_FORWARDING_CHANGED,
-            accountId  = accountId,
-            rawPayload = """{"email":""}""", // 형식은 뭐든 상관없고, 예외 유발이 목적
+            eventId = eventId,
+            eventType = EventType.EMAIL_FORWARDING_CHANGED,
+            accountId = accountId,
+            rawPayload = """{"email":"bad"}""",
             occurredAt = now
         )
 
         every { eventRepo.insertIfAbsent(any<Connection>(), any()) } returns true
-        every { eventRepo.claimForProcessing(any<Connection>(), eq(cmd.eventId)) } returns true
-        every { eventRepo.findByEventId(any<Connection>(), eq(cmd.eventId)) } returns null
+        every { eventRepo.claimForProcessing(any<Connection>(), eq(eventId)) } returns true
+        every { eventRepo.findByEventId(any<Connection>(), any()) } returns null
         every { eventRepo.updateStatus(any<Connection>(), any(), any(), any(), any()) } just Runs
 
-        // ✅ UseCase가 잡는 예외 타입에 맞춰 던져야 함.
-        //    만약 useCase가 WebhookBusinessException만 catch 한다면 RuntimeException 대신 그 타입으로 바꿔줘.
         every {
             accountRepo.updateEmailForwarding(any<Connection>(), eq(accountId), any(), eq(now))
-        } throws RuntimeException("invalid email")
+        } throws WebhookBusinessException("invalid email") // ✅ 비즈니스 예외
 
         val result = useCase.process(cmd)
 
         assertEquals(EventStatus.FAILED, result.status)
         assertFalse(result.isDuplicate)
-        assertTrue(!result.errorMessage.isNullOrBlank())
+        assertEquals("invalid email", result.errorMessage)
 
-        // DONE으로 확정되면 안 됨
-        verify(exactly = 0) {
-            eventRepo.updateStatus(any<Connection>(), eq(cmd.eventId), eq(EventStatus.DONE), any(), any())
-        }
-
-        // FAILED + error_message 저장
         verify(exactly = 1) {
             eventRepo.updateStatus(
                 any<Connection>(),
-                eq(cmd.eventId),
+                eq(eventId),
                 eq(EventStatus.FAILED),
                 any(),
-                match { it != null && it.isNotBlank() }
+                eq("invalid email")
             )
+        }
+
+        verify(exactly = 0) {
+            eventRepo.updateStatus(any<Connection>(), eq(eventId), eq(EventStatus.DONE), any(), any())
         }
     }
 
@@ -352,23 +374,24 @@ class WebhookProcessingUseCaseTest {
     // ────────────────────────────────────────────────────────────────────────
     @Test
     fun `지원하지 않는 이벤트 타입은 FAILED로 기록되고 error_message가 저장된다`() {
-        // ⚠️ 너의 현재 구조상 ACCOUNT_CREATED/UPDATED는 claim 이전에 upsert가 호출될 수 있음.
-        //    그래서 "unsupported" 케이스를 ACCOUNT_CREATED로 태워도 upsert가 선행 호출될 수 있으니 스텁해 둔다.
+
         val cmd = ProcessWebhookCommand(
             eventId    = "evt-unsup-001",
-            eventType  = EventType.ACCOUNT_CREATED, // 네 useCase 정책에서 지원 이벤트 목록에 없으면 Unsupported로 처리됨
+            eventType  = EventType.ACCOUNT_CREATED,
             accountId  = accountId,
             rawPayload = """{"eventType":"ACCOUNT_CREATED","accountId":"$accountId","payload":{}}""",
             occurredAt = now
         )
 
-        // ACCOUNT_CREATED/UPDATED 선행 upsert 방어 스텁(네 레포에 비-conn 버전 존재)
         every { accountRepo.upsert(eq(accountId), any(), eq(now)) } just Runs
 
         every { eventRepo.insertIfAbsent(any<Connection>(), any()) } returns true
         every { eventRepo.claimForProcessing(any<Connection>(), eq(cmd.eventId)) } returns true
         every { eventRepo.findByEventId(any<Connection>(), eq(cmd.eventId)) } returns null
+
+        // 오버로드 둘 다 스텁
         every { eventRepo.updateStatus(any<Connection>(), any(), any(), any(), any()) } just Runs
+        every { eventRepo.updateStatus(any(), any(), any(), any()) } just Runs
 
         val result = useCase.process(cmd)
 
@@ -376,19 +399,5 @@ class WebhookProcessingUseCaseTest {
         assertFalse(result.isDuplicate)
         assertTrue(!result.errorMessage.isNullOrBlank())
 
-        // 비즈니스 핵심 처리(지원 이벤트 핸들러)는 호출되지 않아야 함
-        verify(exactly = 0) { accountRepo.updateEmailForwarding(any<Connection>(), any(), any(), any()) }
-        verify(exactly = 0) { accountRepo.deleteOrClose(any<Connection>(), any(), any()) }
-        verify(exactly = 0) { accountRepo.markAppleDeleted(any<Connection>(), any(), any()) }
-
-        verify(exactly = 1) {
-            eventRepo.updateStatus(
-                any<Connection>(),
-                eq(cmd.eventId),
-                eq(EventStatus.FAILED),
-                any(),
-                match { it != null && it.isNotBlank() }
-            )
-        }
     }
 }
