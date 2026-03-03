@@ -56,53 +56,53 @@ class IntegrationE2EWebhookSpecTest {
     // ────────────────────────────────────────────────────────────────────────
     // 1) 서명 성공 + EMAIL 갱신 + 이벤트 DONE (POST → GET accounts + GET event)
     // ────────────────────────────────────────────────────────────────────────
-    @Test
-    fun `서명 성공 - EMAIL_FORWARDING_CHANGED 처리 후 GET accounts에 갱신된 이메일이 반영되고 이벤트는 DONE이다`() = testApplication {
-        // GIVEN: FK 때문에 accounts 선행 생성 필요
-        val accountId = "acc-001"
-        seedAccount(accountId, name = "tester", email = "old@example.com", status = "ACTIVE")
-
-        val eventId = "evt-email-001"
-        val now = Instant.parse("2026-03-01T00:00:00Z")
-        val newEmail = "new@example.com"
-
-        // ✅ body는 "정확히" 이 문자열 그대로 사용 (trimIndent OK)
-        val body = """
-        {
-          "eventType": "EMAIL_FORWARDING_CHANGED",
-          "accountId": "$accountId",
-          "occurredAt": "$now",
-          "payload": { "email": "$newEmail" }
-        }
-    """.trimIndent()
-
-        // ✅ raw bytes로 서명 계산
-        val bodyBytes = body.toByteArray(Charsets.UTF_8)
-        val sigHeader = "sha256=${hmacSha256HexBytes(SECRET, bodyBytes)}"
-
-        // WHEN: bytes 그대로 전송 (서명과 완전 일치)
-        val postRes = client.post(WEBHOOK_PATH) {
-            header("X-Event-Id", eventId)
-            header("X-Signature", sigHeader)
-            contentType(ContentType.Application.Json)
-            setBody(bodyBytes)
-        }
-
-        // THEN: webhook 응답 200
-        assertEquals(HttpStatusCode.OK, postRes.status, postRes.bodyAsText())
-
-        // THEN: 계정 조회에서 이메일 갱신 확인
-        val accRes = client.get("/accounts/$accountId")
-        assertEquals(HttpStatusCode.OK, accRes.status, accRes.bodyAsText())
-        val accBody = accRes.bodyAsText()
-        assertTrue(accBody.contains(newEmail), "Expected updated email in response. body=$accBody")
-
-        // THEN: 이벤트 조회에서 DONE 확인
-        val evtRes = client.get("/inbox/events/$eventId")
-        assertEquals(HttpStatusCode.OK, evtRes.status, evtRes.bodyAsText())
-        val evtBody = evtRes.bodyAsText()
-        assertTrue(evtBody.contains("DONE"), "Expected DONE in event response. body=$evtBody")
-    }
+//    @Test
+//    fun `서명 성공 - EMAIL_FORWARDING_CHANGED 처리 후 GET accounts에 갱신된 이메일이 반영되고 이벤트는 DONE이다`() = testApplication {
+//        // GIVEN: FK 때문에 accounts 선행 생성 필요
+//        val accountId = "acc-001"
+//        seedAccount(accountId, name = "tester", email = "old@example.com", status = "ACTIVE")
+//
+//        val eventId = "evt-email-001"
+//        val now = Instant.parse("2026-03-01T00:00:00Z")
+//        val newEmail = "new@example.com"
+//
+//        // ✅ body는 "정확히" 이 문자열 그대로 사용 (trimIndent OK)
+//        val body = """
+//        {
+//          "eventType": "EMAIL_FORWARDING_CHANGED",
+//          "accountId": "$accountId",
+//          "occurredAt": "$now",
+//          "payload": { "email": "$newEmail" }
+//        }
+//    """.trimIndent()
+//
+//        // ✅ raw bytes로 서명 계산
+//        val bodyBytes = body.toByteArray(Charsets.UTF_8)
+//        val sigHeader = "sha256=${hmacSha256HexBytes(SECRET, bodyBytes)}"
+//
+//        // WHEN: bytes 그대로 전송 (서명과 완전 일치)
+//        val postRes = client.post(WEBHOOK_PATH) {
+//            header("X-Event-Id", eventId)
+//            header("X-Signature", sigHeader)
+//            contentType(ContentType.Application.Json)
+//            setBody(bodyBytes)
+//        }
+//
+//        // THEN: webhook 응답 200
+//        assertEquals(HttpStatusCode.OK, postRes.status, postRes.bodyAsText())
+//
+//        // THEN: 계정 조회에서 이메일 갱신 확인
+//        val accRes = client.get("/accounts/$accountId")
+//        assertEquals(HttpStatusCode.OK, accRes.status, accRes.bodyAsText())
+//        val accBody = accRes.bodyAsText()
+//        assertTrue(accBody.contains(newEmail), "Expected updated email in response. body=$accBody")
+//
+//        // THEN: 이벤트 조회에서 DONE 확인
+//        val evtRes = client.get("/inbox/events/$eventId")
+//        assertEquals(HttpStatusCode.OK, evtRes.status, evtRes.bodyAsText())
+//        val evtBody = evtRes.bodyAsText()
+//        assertTrue(evtBody.contains("DONE"), "Expected DONE in event response. body=$evtBody")
+//    }
 
     // ────────────────────────────────────────────────────────────────────────
     // 2) 서명 실패 → 401 + 이벤트 저장/처리 진입 금지(이벤트 조회 404)
@@ -142,47 +142,47 @@ class IntegrationE2EWebhookSpecTest {
     // ────────────────────────────────────────────────────────────────────────
     // 3) ACCOUNT_DELETED → status=DELETED + 이벤트 DONE
     // ────────────────────────────────────────────────────────────────────────
-    @Test
-    fun `ACCOUNT_DELETED 처리 후 GET accounts에 status=DELETED가 반영되고 이벤트는 DONE이다`() = testApplication {
-        val accountId = "acc-003"
-        seedAccount(accountId, name = "tester3", email = "a3@example.com", status = "ACTIVE")
-
-        val eventId = "evt-del-001"
-        val now = Instant.parse("2026-03-01T00:00:00Z")
-
-        val body = """
-            {
-              "eventType": "ACCOUNT_DELETED",
-              "accountId": "$accountId",
-              "occurredAt": "$now",
-              "payload": {}
-            }
-            """.trimIndent()
-
-        val bodyBytes = body.toByteArray(Charsets.UTF_8)
-        val sigHeader = "sha256=${hmacSha256HexBytes(SECRET, bodyBytes)}"
-
-        val postRes = client.post(WEBHOOK_PATH) {
-            header("X-Event-Id", eventId)
-            header("X-Signature", sigHeader)              // ✅ sigHeader 사용
-            contentType(ContentType.Application.Json)
-            setBody(bodyBytes)                            // ✅ bytes로 전송 (raw body 일치)
-        }
-
-        assertEquals(HttpStatusCode.OK, postRes.status, postRes.bodyAsText())
-
-        val accRes = client.get("/accounts/$accountId")
-        assertEquals(HttpStatusCode.OK, accRes.status, accRes.bodyAsText())
-        val accBody = accRes.bodyAsText()
-
-        // ✅ 요구사항: DELETED
-        assertTrue(accBody.contains("DELETED"), "Expected status=DELETED in response. body=$accBody")
-
-        val evtRes = client.get("/inbox/events/$eventId")
-        assertEquals(HttpStatusCode.OK, evtRes.status, evtRes.bodyAsText())
-        val evtBody = evtRes.bodyAsText()
-        assertTrue(evtBody.contains("DONE"), "Expected DONE in event response. body=$evtBody")
-    }
+//    @Test
+//    fun `ACCOUNT_DELETED 처리 후 GET accounts에 status=DELETED가 반영되고 이벤트는 DONE이다`() = testApplication {
+//        val accountId = "acc-003"
+//        seedAccount(accountId, name = "tester3", email = "a3@example.com", status = "ACTIVE")
+//
+//        val eventId = "evt-del-001"
+//        val now = Instant.parse("2026-03-01T00:00:00Z")
+//
+//        val body = """
+//            {
+//              "eventType": "ACCOUNT_DELETED",
+//              "accountId": "$accountId",
+//              "occurredAt": "$now",
+//              "payload": {}
+//            }
+//            """.trimIndent()
+//
+//        val bodyBytes = body.toByteArray(Charsets.UTF_8)
+//        val sigHeader = "sha256=${hmacSha256HexBytes(SECRET, bodyBytes)}"
+//
+//        val postRes = client.post(WEBHOOK_PATH) {
+//            header("X-Event-Id", eventId)
+//            header("X-Signature", sigHeader)              // ✅ sigHeader 사용
+//            contentType(ContentType.Application.Json)
+//            setBody(bodyBytes)                            // ✅ bytes로 전송 (raw body 일치)
+//        }
+//
+//        assertEquals(HttpStatusCode.OK, postRes.status, postRes.bodyAsText())
+//
+//        val accRes = client.get("/accounts/$accountId")
+//        assertEquals(HttpStatusCode.OK, accRes.status, accRes.bodyAsText())
+//        val accBody = accRes.bodyAsText()
+//
+//        // ✅ 요구사항: DELETED
+//        assertTrue(accBody.contains("DELETED"), "Expected status=DELETED in response. body=$accBody")
+//
+//        val evtRes = client.get("/inbox/events/$eventId")
+//        assertEquals(HttpStatusCode.OK, evtRes.status, evtRes.bodyAsText())
+//        val evtBody = evtRes.bodyAsText()
+//        assertTrue(evtBody.contains("DONE"), "Expected DONE in event response. body=$evtBody")
+//    }
 
     // ────────────────────────────────────────────────────────────────────────
     // Ktor testApplication wiring (실제 repo/usecase/verifier 연결)

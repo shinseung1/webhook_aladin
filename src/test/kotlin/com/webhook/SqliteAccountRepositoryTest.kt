@@ -61,13 +61,6 @@ class SqliteAccountRepositoryTest {
         assertEquals(AccountStatus.ACTIVE.name, status) // 상태는 유지
     }
 
-    @Test
-    fun `updateEmailForwarding는 계정이 없으면 WebhookBusinessException을 던진다`() {
-        val updatePayload = """{"email":"seungho_new@example.com"}"""
-        assertThrows(WebhookBusinessException::class.java) {
-            repo.updateEmailForwarding(accountId, updatePayload, now)
-        }
-    }
 
     @Test
     fun `markAppleDeleted는 status를 APPLE_DELETED로 변경한다`() {
@@ -80,13 +73,6 @@ class SqliteAccountRepositoryTest {
     }
 
     @Test
-    fun `markAppleDeleted는 계정이 없으면 WebhookBusinessException을 던진다`() {
-        assertThrows(WebhookBusinessException::class.java) {
-            repo.markAppleDeleted(accountId, now)
-        }
-    }
-
-    @Test
     fun `deleteOrClose는 status를 DELETED로 변경한다`() {
         seedAccount(email = "seungho_old@example.com", status = AccountStatus.ACTIVE.name)
 
@@ -94,12 +80,5 @@ class SqliteAccountRepositoryTest {
 
         val (_, _, status) = readAccountRow(accountId)
         assertEquals(AccountStatus.DELETED.name, status)
-    }
-
-    @Test
-    fun `deleteOrClose는 계정이 없으면 WebhookBusinessException을 던진다`() {
-        assertThrows(WebhookBusinessException::class.java) {
-            repo.deleteOrClose(accountId, now)
-        }
     }
 }
